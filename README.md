@@ -32,8 +32,8 @@ Ferramenta com interface gráfica para extrair os dados dos classificados do SIS
 Clone o repositório e instale as dependências:
 
 ```bash
-git clone https://github.com//sisu-2026-emails.git
-cd sisu-2026-emails
+git clone https://github.com/LucasPerrone21/extrator-TITANICO-SISU.git
+cd extrator-TITANICO-SISU
 pip install -r requirements.txt
 ```
 
@@ -83,7 +83,7 @@ Você pode clicar em **PARAR** a qualquer momento. O progresso é salvo e pode s
 ## Estrutura do projeto
 
 ```
-sisu-2026-emails/
+extrator-TITANICO-SISU/
 ├── main.py               # Interface gráfica unificada
 ├── requirements.txt
 └── README.md
