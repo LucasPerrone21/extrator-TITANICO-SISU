@@ -53,6 +53,11 @@ def extrair_pdf(pdf_path: str, output_path: str, callback_progresso, callback_fi
         all_rows = []
         header = None
 
+        # Palavra que identifica a linha de cabeçalho da tabela.
+        # O PDF do SISU/UFBA usa "MUNICÍPIO" como primeira coluna
+        # (em vez de "CURSO", que era o esperado originalmente).
+        HEADER_MARK = "MUNIC"
+
         with pdfplumber.open(pdf_path) as pdf:
             total = len(pdf.pages)
             for i, page in enumerate(pdf.pages, start=1):
@@ -64,7 +69,8 @@ def extrair_pdf(pdf_path: str, output_path: str, callback_progresso, callback_fi
                     for row in table:
                         if not row or not any(row):
                             continue
-                        if row[0] == "CURSO":
+                        primeira_col = str(row[0] or "").strip().upper()
+                        if HEADER_MARK in primeira_col:
                             header = row
                         else:
                             all_rows.append(row)
@@ -74,12 +80,23 @@ def extrair_pdf(pdf_path: str, output_path: str, callback_progresso, callback_fi
             return
 
         df = pd.DataFrame(all_rows, columns=header)
-        df["ESCORE"]   = pd.to_numeric(df["ESCORE"].str.replace(",", "."), errors="coerce")
-        df["ANO"]      = pd.to_numeric(df["ANO"], errors="coerce").astype("Int64")
-        df["SEMESTRE"] = pd.to_numeric(
-            df["SEMESTRE"].str.extract(r"(\d+)", expand=False), errors="coerce"
-        ).astype("Int64")
-        df["INSCRICAO"] = df["INSCRICAO"].astype(str)
+
+        # ESCORE vem no formato "679,71" -> converte para número
+        if "ESCORE" in df.columns:
+            df["ESCORE"] = pd.to_numeric(
+                df["ESCORE"].astype(str).str.replace(",", "."), errors="coerce"
+            )
+
+        # As colunas ANO / SEMESTRE / INSCRICAO não existem no modelo de PDF
+        # do SISU/UFBA (chamada regular). Se um dia aparecerem, tratamos aqui:
+        if "ANO" in df.columns:
+            df["ANO"] = pd.to_numeric(df["ANO"], errors="coerce").astype("Int64")
+        if "SEMESTRE" in df.columns:
+            df["SEMESTRE"] = pd.to_numeric(
+                df["SEMESTRE"].astype(str).str.extract(r"(\d+)", expand=False), errors="coerce"
+            ).astype("Int64")
+        if "INSCRICAO" in df.columns:
+            df["INSCRICAO"] = df["INSCRICAO"].astype(str)
 
         with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
             df.to_excel(writer, index=False, sheet_name="Classificados")
@@ -708,7 +725,7 @@ class App(tk.Tk):
 
         nb = ttk.Notebook(self, style="Dark.TNotebook")
         nb.pack(fill="both", expand=True, padx=0, pady=0)
-
+ 
         # Painel de log (compartilhado entre abas)
         self.log_panel = LogPanel(self)
         self.log_panel.pack(fill="x", padx=24, pady=(0, 12))
