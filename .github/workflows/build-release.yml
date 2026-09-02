@@ -7,6 +7,11 @@ on:
     tags:
       - "v*.*.*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag da release (ex: v1.0.0) — obrigatório ao rodar manualmente"
+        required: true
+        type: string
 
 permissions:
   contents: write   # necessário para criar a Release e subir os arquivos
