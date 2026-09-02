@@ -31,6 +31,24 @@ FONT_MONO   = ("Courier New", 9)
 FONT_BTN    = ("Courier New", 10, "bold")
 FONT_BADGE  = ("Courier New", 8, "bold")
 
+# Palavras que identificam a linha de cabeçalho da tabela.
+# Diferentes edições do PDF do SISU/UFBA usam nomes de coluna diferentes
+# para a primeira coluna: "MUNICÍPIO" (chamada regular) ou "CURSO" (outras chamadas).
+HEADER_KEYWORDS = {"MUNICIPIO", "CURSO"}
+
+
+def _normalizar(texto: str) -> str:
+    """Remove acentos e espaços extras, deixa em maiúsculas, para comparação robusta."""
+    import unicodedata
+    texto = unicodedata.normalize("NFKD", str(texto or "")).encode("ascii", "ignore").decode()
+    return texto.strip().upper()
+
+
+def _linha_e_cabecalho(row) -> bool:
+    if not row or not row[0]:
+        return False
+    return _normalizar(row[0]) in HEADER_KEYWORDS
+
 # ──────────────────────────────────────────────────────────────
 # Fila de log (comunicação thread → UI)
 # ──────────────────────────────────────────────────────────────
@@ -45,18 +63,35 @@ class QueueHandler(logging.Handler):
 # ──────────────────────────────────────────────────────────────
 # Lógica de extração PDF (roda em thread)
 # ──────────────────────────────────────────────────────────────
-def extrair_pdf(pdf_path: str, output_path: str, callback_progresso, callback_fim):
+def detectar_colunas_pdf(pdf_path: str, max_paginas: int = 5):
+    """Lê apenas as primeiras páginas do PDF para descobrir rapidamente
+    os nomes das colunas (linha de cabeçalho), sem processar o arquivo inteiro.
+    O cabeçalho pode aparecer em qualquer uma das primeiras páginas
+    (algumas edições do PDF só imprimem o cabeçalho uma única vez)."""
+    try:
+        import pdfplumber
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages[:max_paginas]:
+                tables = page.extract_tables()
+                for table in tables:
+                    if not table:
+                        continue
+                    for row in table:
+                        if _linha_e_cabecalho(row):
+                            return [str(c).strip() if c else "" for c in row]
+    except Exception:
+        pass
+    return []
+
+
+def extrair_pdf(pdf_path: str, output_path: str, colunas_desejadas: str, callback_progresso, callback_fim):
     try:
         import pdfplumber
         log = logging.getLogger("extrator")
 
         all_rows = []
         header = None
-
-        # Palavra que identifica a linha de cabeçalho da tabela.
-        # O PDF do SISU/UFBA usa "MUNICÍPIO" como primeira coluna
-        # (em vez de "CURSO", que era o esperado originalmente).
-        HEADER_MARK = "MUNIC"
+        linhas_descartadas = 0
 
         with pdfplumber.open(pdf_path) as pdf:
             total = len(pdf.pages)
@@ -69,11 +104,27 @@ def extrair_pdf(pdf_path: str, output_path: str, callback_progresso, callback_fi
                     for row in table:
                         if not row or not any(row):
                             continue
-                        primeira_col = str(row[0] or "").strip().upper()
-                        if HEADER_MARK in primeira_col:
+
+                        if _linha_e_cabecalho(row):
                             header = row
-                        else:
-                            all_rows.append(row)
+                            continue
+
+                        # Ignora qualquer linha antes de o cabeçalho ser
+                        # encontrado (ex: texto de introdução/instruções do
+                        # PDF, que aparece antes da primeira tabela real).
+                        if header is None:
+                            continue
+
+                        # Ignora linhas com número de colunas diferente do
+                        # cabeçalho (lixo de formatação/tabelas mal detectadas).
+                        if len(row) != len(header):
+                            linhas_descartadas += 1
+                            continue
+
+                        all_rows.append(row)
+
+        if linhas_descartadas:
+            log.info(f"⚠ {linhas_descartadas} linha(s) descartada(s) por não corresponder ao formato do cabeçalho.")
 
         if not header or not all_rows:
             callback_fim(False, "Nenhuma tabela encontrada no PDF.")
@@ -97,6 +148,21 @@ def extrair_pdf(pdf_path: str, output_path: str, callback_progresso, callback_fi
             ).astype("Int64")
         if "INSCRICAO" in df.columns:
             df["INSCRICAO"] = df["INSCRICAO"].astype(str)
+
+        # --- FILTRAR COLUNAS DESEJADAS ---
+        if colunas_desejadas:
+            cols_desejadas = [c.strip().upper() for c in colunas_desejadas.split(",") if c.strip()]
+            if cols_desejadas:
+                cols_df_upper = {col.upper(): col for col in df.columns}
+                cols_filtrar = []
+                for col_des in cols_desejadas:
+                    if col_des in cols_df_upper:
+                        cols_filtrar.append(cols_df_upper[col_des])
+                    else:
+                        log.warning(f"Coluna desejada não encontrada no PDF: {col_des}")
+
+                if cols_filtrar:
+                    df = df[cols_filtrar]
 
         with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
             df.to_excel(writer, index=False, sheet_name="Classificados")
@@ -136,7 +202,7 @@ def extrair_email_html(html):
     return None
 
 
-def buscar_emails(xlsx_path: str, output_path: str,
+def buscar_emails(xlsx_path: str, output_path: str, coluna_nome: str,
                   callback_progresso, callback_status,
                   callback_fim, evento_login_ok: threading.Event):
     log = logging.getLogger("buscador")
@@ -154,14 +220,23 @@ def buscar_emails(xlsx_path: str, output_path: str,
         )
         from webdriver_manager.chrome import ChromeDriverManager
 
+        coluna_nome = (coluna_nome or "").strip()
+        if not coluna_nome:
+            callback_fim(False, "Nenhuma coluna de nome selecionada.")
+            return
+
         # Carrega dados (retoma progresso se arquivo de saída já existir)
         if Path(output_path).exists():
-            df = pd.read_excel(output_path, dtype={"NOME": str})
+            df = pd.read_excel(output_path, dtype={coluna_nome: str})
             log.info(f"Retomando progresso de: {output_path}")
         else:
-            df = pd.read_excel(xlsx_path, dtype={"NOME": str})
+            df = pd.read_excel(xlsx_path, dtype={coluna_nome: str})
             df["Email"] = None
             df["Status_Busca"] = None
+
+        if coluna_nome not in df.columns:
+            callback_fim(False, f"A coluna '{coluna_nome}' não existe na planilha.")
+            return
 
         pendentes = df[df["Status_Busca"].isna()].index.tolist()
         total_pendentes = len(pendentes)
@@ -200,7 +275,7 @@ def buscar_emails(xlsx_path: str, output_path: str,
             if _stop_flag.is_set():
                 break
 
-            nome = str(df.at[idx, "NOME"]).strip()
+            nome = str(df.at[idx, coluna_nome]).strip()
 
             # ETA
             if posicao > 1:
@@ -366,6 +441,7 @@ class AbaExtracao(tk.Frame):
         super().__init__(parent, bg=BG)
         self.log = log_panel
         self._rodando = False
+        self.colunas_disponiveis = []   # colunas detectadas no PDF selecionado
         self._build()
 
     def _build(self):
@@ -381,6 +457,45 @@ class AbaExtracao(tk.Frame):
 
         self._linha_arquivo(card, "PDF de entrada:", "pdf_path", self._escolher_pdf, 0)
         self._linha_arquivo(card, "Planilha de saída:", "xlsx_out", self._escolher_xlsx_out, 1)
+        self._linha_texto(card, "Filtrar colunas:", "colunas_desejadas", 2,
+                           placeholder_hint="ex: NOME, ESCORE, Curso  (vazio = todas)")
+
+        # Dispara o preview toda vez que o texto do filtro muda
+        self.colunas_desejadas.trace_add("write", lambda *a: self._atualizar_preview())
+
+        # ── Card de pré-visualização de colunas (NOVO)
+        preview_card = tk.Frame(self, bg=BG_CARD, padx=20, pady=14)
+        preview_card.pack(fill="x", padx=24, pady=(12, 0))
+
+        top_row = tk.Frame(preview_card, bg=BG_CARD)
+        top_row.pack(fill="x")
+        tk.Label(top_row, text="🔎 PRÉ-VISUALIZAÇÃO DE COLUNAS", font=FONT_BADGE,
+                 fg=TEXT_DIM, bg=BG_CARD).pack(side="left")
+        self.lbl_colunas_status = tk.Label(
+            top_row, text="Selecione um PDF para detectar as colunas",
+            font=FONT_BADGE, fg=TEXT_DIM, bg=BG_CARD
+        )
+        self.lbl_colunas_status.pack(side="right")
+
+        tk.Frame(preview_card, bg=BORDER, height=1).pack(fill="x", pady=(10, 10))
+
+        self.lbl_preview_header = tk.Label(
+            preview_card,
+            text="Nenhum filtro definido — todas as colunas serão exportadas.",
+            font=FONT_LABEL, fg=TEXT_DIM, bg=BG_CARD, anchor="w", justify="left"
+        )
+        self.lbl_preview_header.pack(fill="x")
+
+        self.preview_text = tk.Text(
+            preview_card, bg=BG_INPUT, fg=TEXT, font=FONT_MONO,
+            relief="flat", bd=0, wrap="word", height=3,
+            state="disabled", cursor="arrow", padx=10, pady=8
+        )
+        self.preview_text.pack(fill="x", pady=(8, 0))
+        self.preview_text.tag_configure("valid", foreground=SUCCESS)
+        self.preview_text.tag_configure("invalid", foreground=DANGER)
+        self.preview_text.tag_configure("sep", foreground=TEXT_DIM)
+        self.preview_text.tag_configure("hint", foreground=TEXT_DIM, font=("Courier New", 9, "italic"))
 
         # ── Botão
         self.btn = self._botao_acao(self, "EXTRAIR PDF", self._iniciar)
@@ -397,6 +512,9 @@ class AbaExtracao(tk.Frame):
         # ── Estatísticas
         self.lbl_stats = tk.Label(self, text="", font=FONT_LABEL, fg=SUCCESS, bg=BG)
         self.lbl_stats.pack(anchor="w", padx=24, pady=(8, 0))
+
+        # Estado inicial do preview
+        self._atualizar_preview()
 
     def _linha_arquivo(self, parent, label, attr, cmd, row):
         tk.Label(parent, text=label, font=FONT_LABEL, fg=TEXT_DIM, bg=BG_CARD,
@@ -417,6 +535,26 @@ class AbaExtracao(tk.Frame):
 
         parent.columnconfigure(1, weight=1)
 
+    def _linha_texto(self, parent, label, attr, row, placeholder="", placeholder_hint=""):
+        tk.Label(parent, text=label, font=FONT_LABEL, fg=TEXT_DIM, bg=BG_CARD,
+                 width=18, anchor="w").grid(row=row, column=0, sticky="nw", pady=6)
+
+        var = tk.StringVar(value=placeholder)
+        setattr(self, attr, var)
+
+        wrap = tk.Frame(parent, bg=BG_CARD)
+        wrap.grid(row=row, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=6)
+        wrap.columnconfigure(0, weight=1)
+
+        entry = tk.Entry(wrap, textvariable=var, font=FONT_MONO,
+                         bg=BG_INPUT, fg=TEXT, insertbackground=ACCENT,
+                         relief="flat", bd=6)
+        entry.grid(row=0, column=0, sticky="ew")
+
+        if placeholder_hint:
+            tk.Label(wrap, text=placeholder_hint, font=("Courier New", 8, "italic"),
+                     fg=TEXT_DIM, bg=BG_CARD, anchor="w").grid(row=1, column=0, sticky="w", pady=(3, 0))
+
     def _botao_acao(self, parent, texto, cmd):
         return tk.Button(
             parent, text=texto, font=FONT_BTN, fg="white", bg=ACCENT,
@@ -430,6 +568,7 @@ class AbaExtracao(tk.Frame):
             self.pdf_path.set(p)
             if not self.xlsx_out.get():
                 self.xlsx_out.set(str(Path(p).with_suffix(".xlsx")))
+            self._detectar_colunas_async(p)
 
     def _escolher_xlsx_out(self):
         p = filedialog.asksaveasfilename(defaultextension=".xlsx",
@@ -437,11 +576,107 @@ class AbaExtracao(tk.Frame):
         if p:
             self.xlsx_out.set(p)
 
+    # ──────────────────────────────────────────────────────
+    # Detecção e pré-visualização das colunas (NOVO)
+    # ──────────────────────────────────────────────────────
+    def _detectar_colunas_async(self, pdf_path):
+        self.colunas_disponiveis = []
+        self.lbl_colunas_status.configure(text="🔄  detectando colunas…", fg=TEXT_DIM)
+        threading.Thread(target=self._detectar_colunas_thread, args=(pdf_path,), daemon=True).start()
+
+    def _detectar_colunas_thread(self, pdf_path):
+        colunas = detectar_colunas_pdf(pdf_path)
+        self.after(0, lambda: self._colunas_detectadas(colunas))
+
+    def _colunas_detectadas(self, colunas):
+        self.colunas_disponiveis = colunas
+        if colunas:
+            self.lbl_colunas_status.configure(
+                text=f"📋 {len(colunas)} colunas detectadas no PDF", fg=SUCCESS
+            )
+        else:
+            self.lbl_colunas_status.configure(
+                text="⚠ não foi possível detectar as colunas automaticamente", fg=WARNING
+            )
+        self._atualizar_preview()
+
+    def _atualizar_preview(self):
+        texto = self.colunas_desejadas.get().strip()
+        disponiveis = self.colunas_disponiveis or []
+        disp_upper = {c.upper(): c for c in disponiveis if c}
+
+        self.preview_text.configure(state="normal")
+        self.preview_text.delete("1.0", "end")
+
+        if not texto:
+            # Sem filtro: todas as colunas do PDF serão exportadas
+            if disponiveis:
+                self.lbl_preview_header.configure(
+                    text=f"✓  Todas as {len(disponiveis)} colunas serão exportadas:",
+                    fg=SUCCESS
+                )
+                for i, col in enumerate(disponiveis):
+                    if i > 0:
+                        self.preview_text.insert("end", "   ·   ", "sep")
+                    self.preview_text.insert("end", col, "valid")
+            else:
+                self.lbl_preview_header.configure(
+                    text="Nenhum filtro definido — todas as colunas serão exportadas.",
+                    fg=TEXT_DIM
+                )
+                self.preview_text.insert(
+                    "end", "Selecione um PDF para ver a lista completa de colunas disponíveis.", "hint"
+                )
+        else:
+            itens = [c.strip() for c in texto.split(",") if c.strip()]
+            validos, invalidos = [], []
+            for item in itens:
+                if item.upper() in disp_upper:
+                    validos.append(disp_upper[item.upper()])
+                else:
+                    invalidos.append(item)
+
+            total_disp = len(disponiveis) if disponiveis else None
+
+            if invalidos:
+                cor_header = DANGER if not validos else WARNING
+                icone = "✗" if not validos else "⚠"
+            else:
+                cor_header = SUCCESS
+                icone = "✓"
+
+            if total_disp:
+                texto_header = f"{icone}  {len(validos)} de {total_disp} colunas selecionadas"
+            else:
+                texto_header = f"{icone}  {len(validos)} coluna(s) reconhecida(s) (selecione um PDF para validar)"
+
+            self.lbl_preview_header.configure(text=texto_header, fg=cor_header)
+
+            primeiro = True
+            for col in validos:
+                if not primeiro:
+                    self.preview_text.insert("end", "   ·   ", "sep")
+                self.preview_text.insert("end", f"✓ {col}", "valid")
+                primeiro = False
+
+            if invalidos:
+                if not primeiro:
+                    self.preview_text.insert("end", "\n", "sep")
+                primeiro_inv = True
+                for col in invalidos:
+                    if not primeiro_inv:
+                        self.preview_text.insert("end", "   ·   ", "sep")
+                    self.preview_text.insert("end", f"✗ {col} (não encontrada)", "invalid")
+                    primeiro_inv = False
+
+        self.preview_text.configure(state="disabled")
+
     def _iniciar(self):
         if self._rodando:
             return
         pdf = self.pdf_path.get().strip()
         out = self.xlsx_out.get().strip()
+        colunas = self.colunas_desejadas.get().strip()
 
         if not pdf:
             messagebox.showerror("Erro", "Selecione o arquivo PDF.")
@@ -460,7 +695,7 @@ class AbaExtracao(tk.Frame):
 
         threading.Thread(
             target=extrair_pdf,
-            args=(pdf, out, self._cb_progresso, self._cb_fim),
+            args=(pdf, out, colunas, self._cb_progresso, self._cb_fim),
             daemon=True
         ).start()
 
@@ -492,6 +727,7 @@ class AbaBusca(tk.Frame):
         self.log = log_panel
         self._rodando = False
         self._login_event = threading.Event()
+        self.colunas_disponiveis = []   # colunas detectadas na planilha de entrada
         self._build()
 
     def _build(self):
@@ -507,6 +743,41 @@ class AbaBusca(tk.Frame):
 
         self._linha_arquivo(card, "Planilha de entrada:", "xlsx_in", self._escolher_xlsx_in, 0)
         self._linha_arquivo(card, "Planilha de saída:", "xlsx_out", self._escolher_xlsx_out, 1)
+
+        # ── Estilo do combobox (tema escuro)
+        style = ttk.Style()
+        style.theme_use("default")
+        style.configure("Dark.TCombobox",
+                         fieldbackground=BG_INPUT, background=BG_INPUT,
+                         foreground=TEXT, arrowcolor=TEXT_DIM,
+                         bordercolor=BG_INPUT, lightcolor=BG_INPUT, darkcolor=BG_INPUT,
+                         relief="flat", padding=6)
+        style.map("Dark.TCombobox",
+                  fieldbackground=[("readonly", BG_INPUT), ("!disabled", BG_INPUT)],
+                  foreground=[("readonly", TEXT), ("!disabled", TEXT)],
+                  selectbackground=[("!disabled", BG_INPUT)],
+                  selectforeground=[("!disabled", TEXT)])
+
+        # ── Coluna do nome a ser buscado (NOVO)
+        tk.Label(card, text="Coluna do nome:", font=FONT_LABEL, fg=TEXT_DIM, bg=BG_CARD,
+                 width=20, anchor="w").grid(row=2, column=0, sticky="w", pady=6)
+
+        combo_wrap = tk.Frame(card, bg=BG_CARD)
+        combo_wrap.grid(row=2, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=6)
+        combo_wrap.columnconfigure(0, weight=1)
+
+        self.coluna_nome = tk.StringVar(value="NOME")
+        self.combo_coluna_nome = ttk.Combobox(
+            combo_wrap, textvariable=self.coluna_nome, values=[],
+            font=FONT_MONO, style="Dark.TCombobox"
+        )
+        self.combo_coluna_nome.grid(row=0, column=0, sticky="ew")
+
+        self.lbl_colunas_email_status = tk.Label(
+            combo_wrap, text="Selecione a planilha de entrada para listar as colunas",
+            font=("Courier New", 8, "italic"), fg=TEXT_DIM, bg=BG_CARD, anchor="w"
+        )
+        self.lbl_colunas_email_status.grid(row=1, column=0, sticky="w", pady=(3, 0))
 
         # ── Botões
         btns = tk.Frame(self, bg=BG)
@@ -595,6 +866,41 @@ class AbaBusca(tk.Frame):
             if not self.xlsx_out.get():
                 stem = Path(p).stem
                 self.xlsx_out.set(str(Path(p).parent / f"{stem}_com_email.xlsx"))
+            self._detectar_colunas_email_async(p)
+
+    # ──────────────────────────────────────────────────────
+    # Detecção das colunas da planilha para escolher a coluna do nome (NOVO)
+    # ──────────────────────────────────────────────────────
+    def _detectar_colunas_email_async(self, xlsx_path):
+        self.colunas_disponiveis = []
+        self.lbl_colunas_email_status.configure(text="🔄  detectando colunas…", fg=TEXT_DIM)
+        threading.Thread(target=self._detectar_colunas_email_thread, args=(xlsx_path,), daemon=True).start()
+
+    def _detectar_colunas_email_thread(self, xlsx_path):
+        colunas = []
+        try:
+            colunas = pd.read_excel(xlsx_path, nrows=0).columns.tolist()
+        except Exception:
+            colunas = []
+        self.after(0, lambda: self._colunas_email_detectadas(colunas))
+
+    def _colunas_email_detectadas(self, colunas):
+        self.colunas_disponiveis = colunas
+        self.combo_coluna_nome["values"] = colunas
+
+        if colunas:
+            if "NOME" in colunas:
+                self.coluna_nome.set("NOME")
+            elif self.coluna_nome.get() not in colunas:
+                self.coluna_nome.set(colunas[0])
+            self.lbl_colunas_email_status.configure(
+                text=f"📋 {len(colunas)} colunas encontradas — coluna do nome selecionada automaticamente",
+                fg=SUCCESS
+            )
+        else:
+            self.lbl_colunas_email_status.configure(
+                text="⚠ não foi possível ler as colunas da planilha", fg=WARNING
+            )
 
     def _escolher_xlsx_out(self):
         p = filedialog.asksaveasfilename(defaultextension=".xlsx",
@@ -607,12 +913,23 @@ class AbaBusca(tk.Frame):
             return
         xlsx = self.xlsx_in.get().strip()
         out  = self.xlsx_out.get().strip()
+        coluna = self.coluna_nome.get().strip()
 
         if not xlsx or not Path(xlsx).exists():
             messagebox.showerror("Erro", "Selecione uma planilha de entrada válida.")
             return
         if not out:
             messagebox.showerror("Erro", "Defina o caminho de saída.")
+            return
+        if not coluna:
+            messagebox.showerror("Erro", "Selecione a coluna que contém o nome a ser buscado.")
+            return
+        if self.colunas_disponiveis and coluna not in self.colunas_disponiveis:
+            messagebox.showerror(
+                "Erro",
+                f"A coluna '{coluna}' não existe na planilha selecionada.\n"
+                f"Colunas disponíveis: {', '.join(self.colunas_disponiveis)}"
+            )
             return
 
         _stop_flag.clear()
@@ -625,7 +942,7 @@ class AbaBusca(tk.Frame):
 
         threading.Thread(
             target=buscar_emails,
-            args=(xlsx, out, self._cb_progresso, self._cb_status, self._cb_fim, self._login_event),
+            args=(xlsx, out, coluna, self._cb_progresso, self._cb_status, self._cb_fim, self._login_event),
             daemon=True
         ).start()
 
@@ -725,7 +1042,7 @@ class App(tk.Tk):
 
         nb = ttk.Notebook(self, style="Dark.TNotebook")
         nb.pack(fill="both", expand=True, padx=0, pady=0)
- 
+
         # Painel de log (compartilhado entre abas)
         self.log_panel = LogPanel(self)
         self.log_panel.pack(fill="x", padx=24, pady=(0, 12))

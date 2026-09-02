@@ -1,0 +1,91 @@
+name: Build e Release (Windows/Linux)
+
+# Dispara automaticamente quando uma tag de versão é enviada (ex: v1.0.0)
+# e também pode ser disparado manualmente pela aba "Actions" do GitHub.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # necessário para criar a Release e subir os arquivos
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            output_name: sisu-app-linux
+            build_name: sisu-app
+          - os: windows-latest
+            output_name: sisu-app-windows.exe
+            build_name: sisu-app.exe
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # No Linux, o interpretador Python de fábrica não vem com as
+      # bibliotecas do Tcl/Tk necessárias para empacotar o tkinter.
+      - name: Instalar dependências de sistema (Tcl/Tk) - Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk
+
+      - name: Instalar dependências Python
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      # Ajuste "main.py" abaixo para o nome real do arquivo de entrada
+      # do seu app, caso seja diferente.
+      - name: Gerar executável com PyInstaller
+        run: >
+          pyinstaller --onefile --windowed --noconfirm
+          --name sisu-app
+          main.py
+
+      - name: Renomear artefato (Linux)
+        if: runner.os == 'Linux'
+        run: mv dist/sisu-app dist/${{ matrix.output_name }}
+
+      - name: Renomear artefato (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Rename-Item dist/sisu-app.exe dist/${{ matrix.output_name }}
+
+      - name: Upload do artefato de build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output_name }}
+          path: dist/${{ matrix.output_name }}
+
+  release:
+    name: Publicar Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar todos os artefatos
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publicar na Release do GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
