@@ -97,7 +97,7 @@ extrator-TITANICO-SISU/
 
 ```bash
 pip install pyinstaller
-pyinstaller --onefile --windowed --name "SISU_2026" main.py
+pyinstaller --onefile --windowed --icon=logo.ico --name "SISU_2026" main.py
 ```
 
 O executável será gerado em `dist/SISU_2026.exe`.
@@ -106,7 +106,7 @@ O executável será gerado em `dist/SISU_2026.exe`.
 
 ```bash
 pip install pyinstaller
-pyinstaller --onefile --name "SISU_2026" main.py
+pyinstaller --onefile --icon=logo.ico --name "SISU_2026" main.py
 ```
 
 O executável será gerado em `dist/SISU_2026`.

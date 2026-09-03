@@ -14,7 +14,7 @@ on:
         type: string
 
 permissions:
-  contents: write   # necessário para criar a Release e subir os arquivos
+  contents: write # necessário para criar a Release e subir os arquivos
 
 jobs:
   build:
@@ -59,6 +59,7 @@ jobs:
       - name: Gerar executável com PyInstaller
         run: >
           pyinstaller --onefile --windowed --noconfirm
+          --icon=logo.ico
           --name sisu-app
           main.py
 
