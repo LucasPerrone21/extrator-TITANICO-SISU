@@ -3,3 +3,7 @@
 .spec
 /venv
 /.venv
+chrome_profile/
+__pycache__/
+*.log
+*.xlsx

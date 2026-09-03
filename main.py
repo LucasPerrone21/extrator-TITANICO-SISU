@@ -36,6 +36,22 @@ FONT_BADGE  = ("Courier New", 8, "bold")
 # para a primeira coluna: "MUNICÍPIO" (chamada regular) ou "CURSO" (outras chamadas).
 HEADER_KEYWORDS = {"MUNICIPIO", "CURSO"}
 
+# Diretório de perfil persistente do Chrome para manter cookies e login
+PROFILE_DIR = Path(__file__).resolve().parent / "chrome_profile"
+
+
+def sessao_chrome_existe() -> bool:
+    """Verifica se há dados salvos de perfil do Chrome."""
+    return PROFILE_DIR.exists() and any(PROFILE_DIR.iterdir())
+
+
+def limpar_sessao_chrome():
+    """Remove o diretório do perfil para deslogar/trocar de conta."""
+    import shutil
+    if PROFILE_DIR.exists():
+        shutil.rmtree(PROFILE_DIR, ignore_errors=True)
+
+
 
 def _normalizar(texto: str) -> str:
     """Remove acentos e espaços extras, deixa em maiúsculas, para comparação robusta."""
@@ -206,6 +222,7 @@ def buscar_emails(xlsx_path: str, output_path: str, coluna_nome: str,
                   callback_progresso, callback_status,
                   callback_fim, evento_login_ok: threading.Event):
     log = logging.getLogger("buscador")
+    driver = None
 
     try:
         from selenium import webdriver
@@ -247,29 +264,51 @@ def buscar_emails(xlsx_path: str, output_path: str, coluna_nome: str,
 
         log.info(f"Pendentes: {total_pendentes} | Já feitos: {len(df) - total_pendentes}")
 
-        # Inicia navegador
+        # Garante diretório de perfil persistente
+        PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Inicia navegador com perfil persistente
         opcoes = Options()
-        opcoes.add_experimental_option("detach", True)
+        opcoes.add_argument(f"--user-data-dir={PROFILE_DIR.resolve()}")
         opcoes.add_argument("--disable-notifications")
-        driver = webdriver.Chrome(
-            service=Service(ChromeDriverManager().install()),
-            options=opcoes
-        )
 
-        driver.get("https://contacts.google.com/")
-        callback_status("aguardando_login")
-        evento_login_ok.wait()  # UI vai setar esse evento quando usuário clicar "Já fiz login"
-
-        if _stop_flag.is_set():
-            driver.quit()
-            callback_fim(False, "Cancelado pelo usuário.")
-            return
+        try:
+            driver = webdriver.Chrome(
+                service=Service(ChromeDriverManager().install()),
+                options=opcoes
+            )
+        except WebDriverException as e:
+            err_msg = str(e).lower()
+            if "user data directory is already in use" in err_msg or "singletonlock" in err_msg:
+                callback_fim(False, "O perfil do Chrome já está em uso por outro processo. Feche todas as janelas do Chrome e tente novamente.")
+                return
+            raise e
 
         driver.get("https://contacts.google.com/directory")
-        time.sleep(1.5)
+        time.sleep(2)
+
+        url_atual = driver.current_url.lower()
+        precisa_login = "accounts.google.com" in url_atual or "servicelogin" in url_atual or "signin" in url_atual
+
+        if precisa_login:
+            log.info("Login necessário no Google Contacts...")
+            callback_status("aguardando_login")
+            evento_login_ok.wait()  # UI vai setar esse evento quando usuário clicar "Já fiz login"
+
+            if _stop_flag.is_set():
+                callback_fim(False, "Cancelado pelo usuário.")
+                return
+
+            driver.get("https://contacts.google.com/directory")
+            time.sleep(2)
+            callback_status("logado")
+        else:
+            log.info("✔ Sessão Google ativa detectada no perfil! Continuando busca automaticamente...")
+            callback_status("logado")
 
         encontrados = sem_email = erros = 0
         inicio = time.monotonic()
+        posicao = 0
 
         for posicao, idx in enumerate(pendentes, start=1):
             if _stop_flag.is_set():
@@ -341,11 +380,21 @@ def buscar_emails(xlsx_path: str, output_path: str, coluna_nome: str,
         df.to_excel(output_path, index=False)
         total_tempo = time.monotonic() - inicio
         m, s = divmod(int(total_tempo), 60)
-        msg = f"{posicao} registros | {encontrados} e-mails | {m}m {s:02d}s"
-        callback_fim(True, msg)
+        if _stop_flag.is_set():
+            msg = f"Busca interrompida. {posicao} registros processados | {encontrados} e-mails | Progresso salvo."
+            callback_fim(False, msg)
+        else:
+            msg = f"{posicao} registros | {encontrados} e-mails | {m}m {s:02d}s"
+            callback_fim(True, msg)
 
     except Exception as e:
         callback_fim(False, str(e))
+    finally:
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:
+                pass
 
 
 # ──────────────────────────────────────────────────────────────
@@ -779,6 +828,27 @@ class AbaBusca(tk.Frame):
         )
         self.lbl_colunas_email_status.grid(row=1, column=0, sticky="w", pady=(3, 0))
 
+        # ── Perfil do Chrome / Sessão
+        tk.Label(card, text="Sessão do Chrome:", font=FONT_LABEL, fg=TEXT_DIM, bg=BG_CARD,
+                 width=20, anchor="w").grid(row=3, column=0, sticky="w", pady=(10, 4))
+
+        sessao_wrap = tk.Frame(card, bg=BG_CARD)
+        sessao_wrap.grid(row=3, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=(10, 4))
+        sessao_wrap.columnconfigure(0, weight=1)
+
+        self.lbl_sessao_status = tk.Label(
+            sessao_wrap, text="", font=FONT_MONO, fg=TEXT_DIM, bg=BG_CARD, anchor="w"
+        )
+        self.lbl_sessao_status.grid(row=0, column=0, sticky="w")
+
+        self.btn_limpar_sessao = tk.Button(
+            sessao_wrap, text="Limpar Sessão / Trocar Conta", font=FONT_BADGE,
+            fg=TEXT_DIM, bg=BG_INPUT, activebackground=DANGER, activeforeground="white",
+            relief="flat", cursor="hand2", padx=8, pady=3,
+            command=self._limpar_sessao
+        )
+        self.btn_limpar_sessao.grid(row=0, column=1, sticky="e")
+
         # ── Botões
         btns = tk.Frame(self, bg=BG)
         btns.pack(fill="x", padx=24, pady=(16, 0))
@@ -836,6 +906,9 @@ class AbaBusca(tk.Frame):
         # ── Status final
         self.lbl_fim = tk.Label(self, text="", font=FONT_LABEL, fg=SUCCESS, bg=BG)
         self.lbl_fim.pack(anchor="w", padx=24)
+
+        # Atualiza status da sessão do Chrome
+        self._atualizar_status_sessao()
 
     def _badge(self, parent, valor, rotulo, cor):
         f = tk.Frame(parent, bg=BG_CARD, padx=14, pady=8)
@@ -961,6 +1034,9 @@ class AbaBusca(tk.Frame):
         if status == "aguardando_login":
             self.banner_login.pack(fill="x", padx=24, pady=(12, 0))
             self.log.append("Aguardando login no Google Contacts...")
+        elif status == "logado":
+            self.banner_login.pack_forget()
+            self._atualizar_status_sessao()
 
     def _cb_progresso(self, atual, total, nome, eta, encontrados, sem_email, erros):
         pct = atual / total if total else 0
@@ -973,16 +1049,44 @@ class AbaBusca(tk.Frame):
 
     def _cb_fim(self, ok: bool, msg: str):
         self._rodando = False
+        self.banner_login.pack_forget()
         self.btn_start.configure(state="normal", bg=ACCENT, text="INICIAR BUSCA")
         self.btn_stop.configure(state="disabled")
         self.bar.set(1.0 if ok else 0)
         cor = SUCCESS if ok else DANGER
         self.lbl_fim.configure(text=("✔  " if ok else "✗  ") + msg, fg=cor)
         self.log.append(msg)
+        self._atualizar_status_sessao()
         if ok:
             messagebox.showinfo("Concluído", msg)
         else:
             messagebox.showerror("Erro", msg)
+
+    def _atualizar_status_sessao(self):
+        if sessao_chrome_existe():
+            self.lbl_sessao_status.configure(
+                text="● Sessão salva no perfil (login automático)", fg=SUCCESS
+            )
+            self.btn_limpar_sessao.configure(state="normal")
+        else:
+            self.lbl_sessao_status.configure(
+                text="○ Nenhuma sessão salva (será solicitado login)", fg=TEXT_DIM
+            )
+            self.btn_limpar_sessao.configure(state="disabled")
+
+    def _limpar_sessao(self):
+        if self._rodando:
+            messagebox.showwarning("Aviso", "Não é possível limpar a sessão enquanto a busca estiver em execução.")
+            return
+        resp = messagebox.askyesno(
+            "Limpar Sessão do Chrome",
+            "Deseja realmente excluir os dados salvos de login do Chrome?\n\n"
+            "Isso desconectará a conta salva e exigirá novo login na próxima busca."
+        )
+        if resp:
+            limpar_sessao_chrome()
+            self._atualizar_status_sessao()
+            self.log.append("Dados de perfil e sessão do Chrome foram excluídos com sucesso.")
 
 
 # ──────────────────────────────────────────────────────────────
