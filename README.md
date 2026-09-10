@@ -22,7 +22,7 @@ Ferramenta com interface gráfica para extrair os dados dos classificados do SIS
 ## Pré-requisitos
 
 - Python 3.10 ou superior
-- Google Chrome instalado na máquina
+- Pelo menos um dos navegadores suportados instalado na máquina: **Google Chrome**, **Mozilla Firefox**, **Microsoft Edge** ou **Brave**
 - Conta Google com acesso ao [Google Contacts Directory](https://contacts.google.com/directory)
 
 ---
@@ -71,10 +71,12 @@ O resultado será uma planilha com todos os classificados pronta para a próxima
 
 1. Selecione a planilha gerada na etapa anterior
 2. Defina o nome do arquivo de saída
-3. Clique em **INICIAR BUSCA**
-4. O Chrome abrirá automaticamente — faça login na sua conta Google
-5. Após logar, clique no banner **"Já fiz login →"** na aplicação
-6. A busca iniciará automaticamente
+3. Selecione a coluna que contém o nome dos candidatos
+4. Escolha o **navegador** a ser utilizado (o aplicativo detecta automaticamente os navegadores instalados no seu sistema operacional)
+5. Clique em **INICIAR BUSCA**
+6. O navegador selecionado abrirá automaticamente — faça login na sua conta Google (o login e cookies ficam salvos no perfil do navegador para futuras buscas)
+7. Após logar, clique no banner **"Já fiz login →"** na aplicação
+8. A busca iniciará automaticamente
 
 Você pode clicar em **PARAR** a qualquer momento. O progresso é salvo e pode ser retomado depois.
 
@@ -117,7 +119,8 @@ O executável será gerado em `dist/SISU_2026`.
 
 ## Observações
 
-- O Google Chrome precisa estar instalado — o ChromeDriver é gerenciado automaticamente pelo `webdriver-manager`
+- Suporte a múltiplos navegadores: **Google Chrome**, **Mozilla Firefox**, **Microsoft Edge** e **Brave**. Os webdrivers são configurados automaticamente via `webdriver-manager` ou `Selenium Manager` nativo
+- Cada navegador possui seu próprio perfil de dados persistente (`chrome_profile/`, `firefox_profile/`, etc.), mantendo a sessão e o login do Google Contacts salvos entre execuções
 - A busca de e-mails depende do **Google Contacts Directory** da sua organização. Contas pessoais podem não ter acesso ao diretório
 - O tempo estimado para processar ~3.400 registros é de **35 a 45 minutos** com a versão otimizada (espera reativa ao DOM)
 - Um arquivo de log (`buscar_emails.log`) é gerado na mesma pasta durante a busca

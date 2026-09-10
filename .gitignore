@@ -4,6 +4,7 @@
 /venv
 /.venv
 chrome_profile/
+*_profile/
 __pycache__/
 *.log
 *.xlsx

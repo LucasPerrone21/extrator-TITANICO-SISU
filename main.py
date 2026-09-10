@@ -36,20 +36,203 @@ FONT_BADGE  = ("Courier New", 8, "bold")
 # para a primeira coluna: "MUNICÍPIO" (chamada regular) ou "CURSO" (outras chamadas).
 HEADER_KEYWORDS = {"MUNICIPIO", "CURSO"}
 
-# Diretório de perfil persistente do Chrome para manter cookies e login
-PROFILE_DIR = Path(__file__).resolve().parent / "chrome_profile"
+# ──────────────────────────────────────────────────────────────
+# Navegadores suportados e gerenciamento de perfis persistentes
+# ──────────────────────────────────────────────────────────────
+NAVEGADORES = [
+    "Google Chrome",
+    "Mozilla Firefox",
+    "Microsoft Edge",
+    "Brave",
+]
+
+
+def normalizar_chave_navegador(nome: str) -> str:
+    n = (nome or "").strip().lower()
+    if "firefox" in n:
+        return "firefox"
+    if "edge" in n:
+        return "edge"
+    if "brave" in n:
+        return "brave"
+    return "chrome"
+
+
+def get_profile_dir(navegador: str) -> Path:
+    """Retorna o diretório de perfil persistente para o navegador especificado."""
+    chave = normalizar_chave_navegador(navegador)
+    base = Path(__file__).resolve().parent
+    if chave == "chrome":
+        return base / "chrome_profile"
+    elif chave == "firefox":
+        return base / "firefox_profile"
+    elif chave == "edge":
+        return base / "edge_profile"
+    elif chave == "brave":
+        return base / "brave_profile"
+    return base / f"{chave}_profile"
+
+
+# Mantido para retrocompatibilidade
+PROFILE_DIR = get_profile_dir("chrome")
+
+
+def sessao_existe(navegador: str) -> bool:
+    """Verifica se há dados salvos de perfil para o navegador."""
+    p = get_profile_dir(navegador)
+    return p.exists() and any(p.iterdir())
 
 
 def sessao_chrome_existe() -> bool:
-    """Verifica se há dados salvos de perfil do Chrome."""
-    return PROFILE_DIR.exists() and any(PROFILE_DIR.iterdir())
+    """Verifica se há dados salvos de perfil do Chrome (retrocompatibilidade)."""
+    return sessao_existe("chrome")
+
+
+def limpar_sessao(navegador: str):
+    """Remove o diretório de perfil do navegador para deslogar/trocar de conta."""
+    import shutil
+    p = get_profile_dir(navegador)
+    if p.exists():
+        shutil.rmtree(p, ignore_errors=True)
 
 
 def limpar_sessao_chrome():
-    """Remove o diretório do perfil para deslogar/trocar de conta."""
+    """Remove o diretório do perfil do Chrome (retrocompatibilidade)."""
+    limpar_sessao("chrome")
+
+
+def detectar_navegador(navegador: str) -> tuple[bool, str]:
+    """Verifica se o navegador está instalado no sistema operacional e retorna (instalado, caminho)."""
+    import os
+    import platform
     import shutil
-    if PROFILE_DIR.exists():
-        shutil.rmtree(PROFILE_DIR, ignore_errors=True)
+
+    chave = normalizar_chave_navegador(navegador)
+    sistema = platform.system()
+
+    if chave == "chrome":
+        if sistema == "Linux":
+            for b in ["google-chrome-stable", "google-chrome", "chromium", "chromium-browser", "/opt/google/chrome/google-chrome"]:
+                if b.startswith("/") and Path(b).exists():
+                    return True, str(Path(b).resolve())
+                p = shutil.which(b)
+                if p:
+                    return True, p
+        elif sistema == "Windows":
+            candidatos = [
+                os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+                os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+                os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+            ]
+            for cand in candidatos:
+                if Path(cand).exists():
+                    return True, cand
+            p = shutil.which("chrome")
+            if p:
+                return True, p
+        elif sistema == "Darwin":
+            p = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+            if p.exists():
+                return True, str(p)
+            p = shutil.which("google-chrome")
+            if p:
+                return True, p
+
+    elif chave == "firefox":
+        if sistema == "Linux":
+            for b in ["firefox", "/usr/bin/firefox"]:
+                if b.startswith("/") and Path(b).exists():
+                    return True, str(Path(b).resolve())
+                p = shutil.which(b)
+                if p:
+                    return True, p
+        elif sistema == "Windows":
+            candidatos = [
+                os.path.expandvars(r"%ProgramFiles%\Mozilla Firefox\firefox.exe"),
+                os.path.expandvars(r"%ProgramFiles(x86)%\Mozilla Firefox\firefox.exe"),
+            ]
+            for cand in candidatos:
+                if Path(cand).exists():
+                    return True, cand
+            p = shutil.which("firefox")
+            if p:
+                return True, p
+        elif sistema == "Darwin":
+            p = Path("/Applications/Firefox.app/Contents/MacOS/firefox")
+            if p.exists():
+                return True, str(p)
+            p = shutil.which("firefox")
+            if p:
+                return True, p
+
+    elif chave == "edge":
+        if sistema == "Linux":
+            for b in ["microsoft-edge-stable", "microsoft-edge", "/opt/microsoft/msedge/msedge"]:
+                if b.startswith("/") and Path(b).exists():
+                    return True, str(Path(b).resolve())
+                p = shutil.which(b)
+                if p:
+                    return True, p
+        elif sistema == "Windows":
+            candidatos = [
+                os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
+                os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"),
+            ]
+            for cand in candidatos:
+                if Path(cand).exists():
+                    return True, cand
+            p = shutil.which("msedge")
+            if p:
+                return True, p
+        elif sistema == "Darwin":
+            p = Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge")
+            if p.exists():
+                return True, str(p)
+            p = shutil.which("microsoft-edge")
+            if p:
+                return True, p
+
+    elif chave == "brave":
+        if sistema == "Linux":
+            for b in [
+                "brave-browser", "brave-browser-stable", "brave",
+                "/usr/bin/brave-browser", "/usr/bin/brave-browser-stable",
+                "/opt/brave.com/brave/brave-browser", "/opt/brave.com/brave/brave",
+            ]:
+                if b.startswith("/") and Path(b).exists():
+                    return True, str(Path(b).resolve())
+                p = shutil.which(b)
+                if p:
+                    return True, p
+        elif sistema == "Windows":
+            candidatos = [
+                os.path.expandvars(r"%ProgramFiles%\BraveSoftware\Brave-Browser\Application\brave.exe"),
+                os.path.expandvars(r"%LocalAppData%\BraveSoftware\Brave-Browser\Application\brave.exe"),
+            ]
+            for cand in candidatos:
+                if Path(cand).exists():
+                    return True, cand
+            p = shutil.which("brave")
+            if p:
+                return True, p
+        elif sistema == "Darwin":
+            p = Path("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser")
+            if p.exists():
+                return True, str(p)
+            p = shutil.which("brave")
+            if p:
+                return True, p
+
+    return False, ""
+
+
+def obter_navegador_padrao() -> str:
+    """Retorna o primeiro navegador detectado no sistema, ou 'Google Chrome' se nenhum for detectado."""
+    for nav in NAVEGADORES:
+        ok, _ = detectar_navegador(nav)
+        if ok:
+            return nav
+    return NAVEGADORES[0]
 
 
 
@@ -218,16 +401,126 @@ def extrair_email_html(html):
     return None
 
 
+def iniciar_driver(navegador: str, profile_dir: Path, log):
+    """Inicializa e retorna o driver Selenium para o navegador solicitado,
+    configurado com perfil persistente para manter a sessão ativa."""
+    from selenium import webdriver
+    chave = normalizar_chave_navegador(navegador)
+    profile_dir.mkdir(parents=True, exist_ok=True)
+
+    if chave == "chrome":
+        from selenium.webdriver.chrome.options import Options as ChromeOptions
+        from selenium.webdriver.chrome.service import Service as ChromeService
+        from webdriver_manager.chrome import ChromeDriverManager
+
+        opcoes = ChromeOptions()
+        opcoes.add_argument(f"--user-data-dir={profile_dir.resolve()}")
+        opcoes.add_argument("--disable-notifications")
+
+        try:
+            return webdriver.Chrome(
+                service=ChromeService(ChromeDriverManager().install()),
+                options=opcoes
+            )
+        except Exception as e:
+            log.warning(f"WebDriverManager falhou ({e}). Tentando Selenium Manager...")
+            return webdriver.Chrome(options=opcoes)
+
+    elif chave == "firefox":
+        from selenium.webdriver.firefox.options import Options as FirefoxOptions
+        from selenium.webdriver.firefox.service import Service as FirefoxService
+        from webdriver_manager.firefox import GeckoDriverManager
+
+        opcoes = FirefoxOptions()
+        opcoes.add_argument("-profile")
+        opcoes.add_argument(str(profile_dir.resolve()))
+        opcoes.set_preference("dom.webnotifications.enabled", False)
+
+        try:
+            return webdriver.Firefox(
+                service=FirefoxService(GeckoDriverManager().install()),
+                options=opcoes
+            )
+        except Exception as e:
+            log.warning(f"GeckoDriverManager falhou ({e}). Tentando Selenium Manager...")
+            return webdriver.Firefox(options=opcoes)
+
+    elif chave == "edge":
+        from selenium.webdriver.edge.options import Options as EdgeOptions
+        from selenium.webdriver.edge.service import Service as EdgeService
+        from webdriver_manager.microsoft import EdgeChromiumDriverManager
+
+        opcoes = EdgeOptions()
+        opcoes.add_argument(f"--user-data-dir={profile_dir.resolve()}")
+        opcoes.add_argument("--disable-notifications")
+
+        try:
+            return webdriver.Edge(
+                service=EdgeService(EdgeChromiumDriverManager().install()),
+                options=opcoes
+            )
+        except Exception as e:
+            log.warning(f"EdgeChromiumDriverManager falhou ({e}). Tentando Selenium Manager...")
+            return webdriver.Edge(options=opcoes)
+
+    elif chave == "brave":
+        from selenium.webdriver.chrome.options import Options as ChromeOptions
+        from selenium.webdriver.chrome.service import Service as ChromeService
+        from webdriver_manager.chrome import ChromeDriverManager
+        import subprocess
+        import socket
+
+        ok_brave, caminho_brave = detectar_navegador("brave")
+        if not ok_brave or not caminho_brave:
+            raise FileNotFoundError("O executável do Brave não foi encontrado no sistema.")
+
+        # Obtém uma porta livre para o DevTools para evitar fechamento do Brave no Linux
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            porta = s.getsockname()[1]
+
+        cmd = [
+            caminho_brave,
+            f"--user-data-dir={profile_dir.resolve()}",
+            f"--remote-debugging-port={porta}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-notifications",
+        ]
+
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(2)
+
+        opcoes = ChromeOptions()
+        opcoes.add_experimental_option("debuggerAddress", f"127.0.0.1:{porta}")
+
+        try:
+            driver = webdriver.Chrome(
+                service=ChromeService(ChromeDriverManager().install()),
+                options=opcoes
+            )
+        except Exception as e:
+            log.warning(f"ChromeDriverManager falhou ({e}). Tentando Selenium Manager nativo...")
+            try:
+                driver = webdriver.Chrome(options=opcoes)
+            except Exception as e2:
+                proc.terminate()
+                raise e2
+
+        driver._brave_proc = proc
+        return driver
+
+    raise ValueError(f"Navegador não suportado: {navegador}")
+
+
 def buscar_emails(xlsx_path: str, output_path: str, coluna_nome: str,
                   callback_progresso, callback_status,
-                  callback_fim, evento_login_ok: threading.Event):
+                  callback_fim, evento_login_ok: threading.Event,
+                  navegador: str = "Google Chrome"):
     log = logging.getLogger("buscador")
     driver = None
 
     try:
-        from selenium import webdriver
-        from selenium.webdriver.chrome.options import Options
-        from selenium.webdriver.chrome.service import Service
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
@@ -235,7 +528,6 @@ def buscar_emails(xlsx_path: str, output_path: str, coluna_nome: str,
             TimeoutException, NoSuchElementException,
             StaleElementReferenceException, WebDriverException,
         )
-        from webdriver_manager.chrome import ChromeDriverManager
 
         coluna_nome = (coluna_nome or "").strip()
         if not coluna_nome:
@@ -264,25 +556,22 @@ def buscar_emails(xlsx_path: str, output_path: str, coluna_nome: str,
 
         log.info(f"Pendentes: {total_pendentes} | Já feitos: {len(df) - total_pendentes}")
 
-        # Garante diretório de perfil persistente
-        PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-
-        # Inicia navegador com perfil persistente
-        opcoes = Options()
-        opcoes.add_argument(f"--user-data-dir={PROFILE_DIR.resolve()}")
-        opcoes.add_argument("--disable-notifications")
+        # Garante diretório de perfil persistente para o navegador escolhido
+        profile_dir = get_profile_dir(navegador)
+        log.info(f"Iniciando {navegador} com perfil em: {profile_dir.name}")
 
         try:
-            driver = webdriver.Chrome(
-                service=Service(ChromeDriverManager().install()),
-                options=opcoes
-            )
+            driver = iniciar_driver(navegador, profile_dir, log)
         except WebDriverException as e:
             err_msg = str(e).lower()
-            if "user data directory is already in use" in err_msg or "singletonlock" in err_msg:
-                callback_fim(False, "O perfil do Chrome já está em uso por outro processo. Feche todas as janelas do Chrome e tente novamente.")
+            if "user data directory is already in use" in err_msg or "singletonlock" in err_msg or "already in use" in err_msg or "process is already using" in err_msg:
+                callback_fim(False, f"O perfil do {navegador} já está em uso por outro processo. Feche todas as janelas do {navegador} e tente novamente.")
                 return
-            raise e
+            callback_fim(False, f"Falha ao iniciar {navegador}: {e}")
+            return
+        except Exception as e:
+            callback_fim(False, f"Erro ao iniciar {navegador}: {e}")
+            return
 
         driver.get("https://contacts.google.com/directory")
         time.sleep(2)
@@ -291,7 +580,7 @@ def buscar_emails(xlsx_path: str, output_path: str, coluna_nome: str,
         precisa_login = "accounts.google.com" in url_atual or "servicelogin" in url_atual or "signin" in url_atual
 
         if precisa_login:
-            log.info("Login necessário no Google Contacts...")
+            log.info(f"Login necessário no Google Contacts via {navegador}...")
             callback_status("aguardando_login")
             evento_login_ok.wait()  # UI vai setar esse evento quando usuário clicar "Já fiz login"
 
@@ -303,7 +592,7 @@ def buscar_emails(xlsx_path: str, output_path: str, coluna_nome: str,
             time.sleep(2)
             callback_status("logado")
         else:
-            log.info("✔ Sessão Google ativa detectada no perfil! Continuando busca automaticamente...")
+            log.info(f"✔ Sessão Google ativa detectada no perfil do {navegador}! Continuando busca automaticamente...")
             callback_status("logado")
 
         encontrados = sem_email = erros = 0
@@ -392,7 +681,14 @@ def buscar_emails(xlsx_path: str, output_path: str, coluna_nome: str,
     finally:
         if driver is not None:
             try:
+                brave_proc = getattr(driver, "_brave_proc", None)
                 driver.quit()
+                if brave_proc is not None:
+                    brave_proc.terminate()
+                    try:
+                        brave_proc.wait(timeout=2)
+                    except Exception:
+                        brave_proc.kill()
             except Exception:
                 pass
 
@@ -828,12 +1124,35 @@ class AbaBusca(tk.Frame):
         )
         self.lbl_colunas_email_status.grid(row=1, column=0, sticky="w", pady=(3, 0))
 
-        # ── Perfil do Chrome / Sessão
-        tk.Label(card, text="Sessão do Chrome:", font=FONT_LABEL, fg=TEXT_DIM, bg=BG_CARD,
-                 width=20, anchor="w").grid(row=3, column=0, sticky="w", pady=(10, 4))
+        # ── Navegador para scraping
+        tk.Label(card, text="Navegador:", font=FONT_LABEL, fg=TEXT_DIM, bg=BG_CARD,
+                 width=20, anchor="w").grid(row=3, column=0, sticky="w", pady=6)
+
+        nav_wrap = tk.Frame(card, bg=BG_CARD)
+        nav_wrap.grid(row=3, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=6)
+        nav_wrap.columnconfigure(0, weight=1)
+
+        self.navegador_var = tk.StringVar(value=obter_navegador_padrao())
+        self.combo_navegador = ttk.Combobox(
+            nav_wrap, textvariable=self.navegador_var, values=NAVEGADORES,
+            font=FONT_MONO, style="Dark.TCombobox", state="readonly"
+        )
+        self.combo_navegador.grid(row=0, column=0, sticky="ew")
+        self.combo_navegador.bind("<<ComboboxSelected>>", lambda e: self._on_navegador_changed())
+
+        self.lbl_navegador_status = tk.Label(
+            nav_wrap, text="",
+            font=("Courier New", 8, "italic"), fg=TEXT_DIM, bg=BG_CARD, anchor="w"
+        )
+        self.lbl_navegador_status.grid(row=1, column=0, sticky="w", pady=(3, 0))
+
+        # ── Perfil / Sessão
+        self.lbl_sessao_titulo = tk.Label(card, text="Sessão salva:", font=FONT_LABEL, fg=TEXT_DIM, bg=BG_CARD,
+                 width=20, anchor="w")
+        self.lbl_sessao_titulo.grid(row=4, column=0, sticky="w", pady=(10, 4))
 
         sessao_wrap = tk.Frame(card, bg=BG_CARD)
-        sessao_wrap.grid(row=3, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=(10, 4))
+        sessao_wrap.grid(row=4, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=(10, 4))
         sessao_wrap.columnconfigure(0, weight=1)
 
         self.lbl_sessao_status = tk.Label(
@@ -907,8 +1226,8 @@ class AbaBusca(tk.Frame):
         self.lbl_fim = tk.Label(self, text="", font=FONT_LABEL, fg=SUCCESS, bg=BG)
         self.lbl_fim.pack(anchor="w", padx=24)
 
-        # Atualiza status da sessão do Chrome
-        self._atualizar_status_sessao()
+        # Inicializa detecção do navegador e status da sessão
+        self._on_navegador_changed()
 
     def _badge(self, parent, valor, rotulo, cor):
         f = tk.Frame(parent, bg=BG_CARD, padx=14, pady=8)
@@ -1013,9 +1332,19 @@ class AbaBusca(tk.Frame):
         self.lbl_fim.configure(text="")
         self.bar.set(0)
 
+        nav = self.navegador_var.get().strip() or "Google Chrome"
+        ok_nav, _ = detectar_navegador(nav)
+        if not ok_nav:
+            messagebox.showerror(
+                "Erro",
+                f"O navegador '{nav}' não foi encontrado no sistema.\n\n"
+                f"Por favor, instale-o ou selecione outro navegador na lista."
+            )
+            return
+
         threading.Thread(
             target=buscar_emails,
-            args=(xlsx, out, coluna, self._cb_progresso, self._cb_status, self._cb_fim, self._login_event),
+            args=(xlsx, out, coluna, self._cb_progresso, self._cb_status, self._cb_fim, self._login_event, nav),
             daemon=True
         ).start()
 
@@ -1062,8 +1391,24 @@ class AbaBusca(tk.Frame):
         else:
             messagebox.showerror("Erro", msg)
 
+    def _on_navegador_changed(self):
+        nav = self.navegador_var.get().strip()
+        instalado, detalhe = detectar_navegador(nav)
+        if instalado:
+            self.lbl_navegador_status.configure(
+                text=f"✔ Instalado no sistema ({detalhe})", fg=SUCCESS
+            )
+        else:
+            self.lbl_navegador_status.configure(
+                text="⚠ Não encontrado no sistema (instale-o antes de usar)", fg=WARNING
+            )
+        self._atualizar_status_sessao()
+
     def _atualizar_status_sessao(self):
-        if sessao_chrome_existe():
+        nav = self.navegador_var.get().strip() if hasattr(self, "navegador_var") else "Google Chrome"
+        if hasattr(self, "lbl_sessao_titulo"):
+            self.lbl_sessao_titulo.configure(text=f"Sessão ({nav}):")
+        if sessao_existe(nav):
             self.lbl_sessao_status.configure(
                 text="● Sessão salva no perfil (login automático)", fg=SUCCESS
             )
@@ -1078,15 +1423,16 @@ class AbaBusca(tk.Frame):
         if self._rodando:
             messagebox.showwarning("Aviso", "Não é possível limpar a sessão enquanto a busca estiver em execução.")
             return
+        nav = self.navegador_var.get().strip() or "Google Chrome"
         resp = messagebox.askyesno(
-            "Limpar Sessão do Chrome",
-            "Deseja realmente excluir os dados salvos de login do Chrome?\n\n"
-            "Isso desconectará a conta salva e exigirá novo login na próxima busca."
+            f"Limpar Sessão do {nav}",
+            f"Deseja realmente excluir os dados salvos de login do {nav}?\n\n"
+            f"Isso desconectará a conta salva e exigirá novo login na próxima busca."
         )
         if resp:
-            limpar_sessao_chrome()
+            limpar_sessao(nav)
             self._atualizar_status_sessao()
-            self.log.append("Dados de perfil e sessão do Chrome foram excluídos com sucesso.")
+            self.log.append(f"Dados de perfil e sessão do {nav} foram excluídos com sucesso.")
 
 
 # ──────────────────────────────────────────────────────────────
@@ -1097,8 +1443,8 @@ class App(tk.Tk):
         super().__init__()
         self.title("SISU 2026 — Extração & E-mails")
         self.configure(bg=BG)
-        self.geometry("720x780")
-        self.minsize(640, 680)
+        self.geometry("720x820")
+        self.minsize(640, 700)
         self._setup_logging()
         self._build()
 
